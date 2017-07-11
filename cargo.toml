@@ -4,3 +4,4 @@ version = "0.0.1"
 authors = ["Neil Grattan"]
 
 [dependencies]
+winapi = "0.2"
