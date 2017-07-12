@@ -6,10 +6,10 @@ use std::iter::once;
 use std::os::windows::ffi::OsStrExt;
 use std::ptr::null_mut;
 
-pub fn print_message(msg: &str) {
-    let wide: Vec<u16> = OsStr::new(msg).encode_wide().chain(once(0)).collect();
+pub fn main() {
+    let wide: Vec<u16> = OsStr::new("Oi oiiii").encode_wide().chain(once(0)).collect();
     let ret = unsafe {
-        user32::MessageBoxW(null_mut(), wide.as_ptr(), wide.as_ptr(), winapi::MB_OK)
+        user32::MessageBoxW(null_mut(), wide.as_ptr(), wide.as_ptr(), winapi::MB_OK | winapi::MB_ICONINFORMATION)
     };
     if ret == 0 {
         println!("Failed: {:?}", Error::last_os_error());
