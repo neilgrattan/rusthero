@@ -1,6 +1,0 @@
-[package]
-name = "rusthero"
-version = "0.1.0"
-authors = ["Wheeb <ngrattan1984@googlemail.com>"]
-
-[dependencies]

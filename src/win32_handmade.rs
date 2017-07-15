@@ -83,7 +83,7 @@ fn to_wide_string(str: &str) -> Vec<u16> {
  pub unsafe extern "system" fn winproc(h_wnd :HWND, msg :UINT, w_param :WPARAM, l_param :LPARAM) -> LRESULT {
         match msg {
             WM_SIZE => { println!("WM_SIZE"); },
-            WM_CLOSE => {  GLOBAL_RUNNING = false; /* return user32::DefWindowProcW(h_wnd, msg, w_param, l_param); */  },
+            WM_CLOSE => {  GLOBAL_RUNNING = false; },
             WM_ACTIVATEAPP => { println!("WM_ACTIVATEAPP"); },
             WM_PAINT => { 
                 println!("WM_PAINT"); 
