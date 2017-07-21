@@ -9,7 +9,7 @@ use std::iter::once;
 use std::os::windows::ffi::OsStrExt;
 // use std::ptr::null_mut;
 use std::mem;
-use self::winapi::winuser::{WNDCLASSW,CS_HREDRAW,CS_VREDRAW,WS_OVERLAPPEDWINDOW,CW_USEDEFAULT,MSG,WS_VISIBLE,PM_REMOVE,WM_PAINT,WM_SIZE,WM_CLOSE,WM_ACTIVATEAPP,PAINTSTRUCT};
+use self::winapi::winuser::{WNDCLASSW,CS_HREDRAW,CS_VREDRAW,WS_OVERLAPPEDWINDOW,CW_USEDEFAULT,MSG,WS_VISIBLE,PM_REMOVE,WM_PAINT,WM_SIZE,WM_CLOSE,WM_ACTIVATEAPP,WM_DESTROY,PAINTSTRUCT};
 use self::winapi::windef::{HWND,HBRUSH,HMENU};
 use self::winapi::minwindef::{UINT,WPARAM,LPARAM,LRESULT,LPVOID};
 use self::winapi::wingdi::{WHITENESS,BLACKNESS, PATINVERT};
@@ -83,7 +83,8 @@ fn to_wide_string(str: &str) -> Vec<u16> {
  pub unsafe extern "system" fn winproc(hwnd :HWND, msg :UINT, w_param :WPARAM, l_param :LPARAM) -> LRESULT {
         match msg {
             WM_SIZE => { println!("WM_SIZE"); },
-            WM_CLOSE => {  GLOBAL_RUNNING = false; },
+            WM_CLOSE => {  GLOBAL_RUNNING = false;  },
+            WM_DESTROY => { GLOBAL_RUNNING = false; },
             WM_ACTIVATEAPP => { println!("WM_ACTIVATEAPP"); },
             WM_PAINT => {
                 let mut paint: PAINTSTRUCT = mem::uninitialized();
