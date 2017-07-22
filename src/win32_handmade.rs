@@ -162,9 +162,7 @@ pub fn main() {
             return;
         }
 
-        let mut device_context = user32::GetDC(window_handle);
-        // let mut window_rect: RECT = mem::uninitialized();
-        // user32::GetClientRect(window_handle, &mut window_rect);
+        let device_context = user32::GetDC(window_handle);
         let mut window_dimensions = win32_get_window_dimensions(window_handle);
 
         let mut x = 0;
@@ -185,8 +183,6 @@ pub fn main() {
                 REFRESH_WINDOW_DIMENSIONS = false;
             }
             win32_update_window(device_context, &mut OFFSCREEN_BUFFER, window_dimensions.width, window_dimensions.height);
-
-            
         }
     }
 }
