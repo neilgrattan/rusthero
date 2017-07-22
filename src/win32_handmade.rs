@@ -28,7 +28,6 @@ struct WindowDimensions {
 }
 
 static mut GLOBAL_RUNNING: bool = true;
-static mut REFRESH_WINDOW_DIMENSIONS: bool = false;
 
 static mut OFFSCREEN_BUFFER: Win32OffscreenBuffer = Win32OffscreenBuffer {
     info: BITMAPINFO {
@@ -78,6 +77,10 @@ unsafe fn win32_resize_dib_section(buffer: &mut Win32OffscreenBuffer, width: i32
 
 }
 
+fn to_wide_string(str: &str) -> Vec<u16> {
+    OsStr::new(str).encode_wide().chain(once(0)).collect()
+}
+
 unsafe fn draw_weird_gradient(buffer: &mut Win32OffscreenBuffer, x_offset: u32, y_offset: u32) {
     
     let width = buffer.width;
@@ -99,8 +102,8 @@ unsafe fn draw_weird_gradient(buffer: &mut Win32OffscreenBuffer, x_offset: u32, 
 
 unsafe fn win32_update_window(device_context: HDC, buffer: &mut Win32OffscreenBuffer, window_width: i32, window_height: i32) {
     gdi32::StretchDIBits(device_context, 
-        0, 0, buffer.width, buffer.height,
         0, 0, window_width, window_height,
+        0, 0, buffer.width, buffer.height,
         buffer.memory, 
         &buffer.info, 
         DIB_RGB_COLORS, 
@@ -110,8 +113,7 @@ unsafe fn win32_update_window(device_context: HDC, buffer: &mut Win32OffscreenBu
 pub fn main() {
     unsafe {
         OFFSCREEN_BUFFER.info.bmiHeader.biSize = mem::size_of::<BITMAPINFOHEADER>() as u32;
-        OFFSCREEN_BUFFER.info.bmiHeader.biWidth = 1080;
-        OFFSCREEN_BUFFER.info.bmiHeader.biHeight = 640;
+        win32_resize_dib_section(&mut OFFSCREEN_BUFFER, 1280, 720)
     }
 
     let window_class_name = to_wide_string("RustHeroWindowClass").as_ptr();
@@ -163,7 +165,6 @@ pub fn main() {
         }
 
         let device_context = user32::GetDC(window_handle);
-        let mut window_dimensions = win32_get_window_dimensions(window_handle);
 
         let mut x = 0;
         let mut y = 0;
@@ -178,32 +179,19 @@ pub fn main() {
             y += 1;
             draw_weird_gradient(&mut OFFSCREEN_BUFFER, x,y);
             
-            if REFRESH_WINDOW_DIMENSIONS {
-                window_dimensions = win32_get_window_dimensions(window_handle);
-                REFRESH_WINDOW_DIMENSIONS = false;
-            }
+            let window_dimensions = win32_get_window_dimensions(window_handle);
             win32_update_window(device_context, &mut OFFSCREEN_BUFFER, window_dimensions.width, window_dimensions.height);
         }
     }
 }
 
-fn to_wide_string(str: &str) -> Vec<u16> {
-    OsStr::new(str).encode_wide().chain(once(0)).collect()
-}
-
  pub unsafe extern "system" fn winproc(hwnd :HWND, msg :UINT, w_param :WPARAM, l_param :LPARAM) -> LRESULT {
     match msg {
-        WM_SIZE => { 
-            println!("WM_SIZE"); 
-            let window_dimensions = win32_get_window_dimensions(hwnd);
-            win32_resize_dib_section(&mut OFFSCREEN_BUFFER, window_dimensions.width, window_dimensions.height);
-            REFRESH_WINDOW_DIMENSIONS = true;
-        },
+        WM_SIZE => {  },
         WM_CLOSE => {  GLOBAL_RUNNING = false;  },
         WM_DESTROY => { GLOBAL_RUNNING = false; },
         WM_ACTIVATEAPP => { println!("WM_ACTIVATEAPP"); },
         WM_PAINT => {
-            println!("WM_PAINT");
             let mut paint: PAINTSTRUCT = mem::uninitialized();
             let hdc = user32::BeginPaint(hwnd, &mut paint);
             let window_dimensions = win32_get_window_dimensions(hwnd);
