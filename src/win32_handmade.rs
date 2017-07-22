@@ -3,16 +3,20 @@ extern crate winapi;
 extern crate kernel32;
 extern crate libc;
 extern crate gdi32;
+extern crate xinput;
+
 use std::ffi::OsStr;
 use std::iter::once;
 use std::os::windows::ffi::OsStrExt;
 use std::mem;
+use std::ptr::null_mut;
 
 use self::winapi::winuser::*;
 use self::winapi::windef::*;
 use self::winapi::minwindef::*;
 use self::winapi::wingdi::*;
 use self::winapi::winnt::*;
+use self::winapi::xinput::*;
 
 struct Win32OffscreenBuffer {
     info: BITMAPINFO,
@@ -166,18 +170,49 @@ pub fn main() {
 
         let device_context = user32::GetDC(window_handle);
 
-        let mut x = 0;
-        let mut y = 0;
+        let mut x_offset = 0;
+        let mut y_offset = 0;
+        let pan_speed = 10;
+
         while GLOBAL_RUNNING {
             let mut msg: MSG = mem::uninitialized();
             while user32::PeekMessageW(&mut msg, window_handle,0,0,PM_REMOVE) != 0 {
                 user32::TranslateMessage(&mut msg);
                 user32::DispatchMessageW(&mut msg);
             }
-            
-            x += 1;
-            y += 1;
-            draw_weird_gradient(&mut OFFSCREEN_BUFFER, x,y);
+
+            for controller_index in 0..XUSER_MAX_COUNT {
+                let mut controller_state = mem::uninitialized();          
+                let controller_found = xinput::XInputGetState(controller_index as DWORD, &mut controller_state);
+                if controller_found == self::winapi::winerror::ERROR_SUCCESS {
+                    let pad = controller_state.Gamepad;
+                    
+                    let dpad_up = pad.wButtons & XINPUT_GAMEPAD_DPAD_UP;
+                    let dpad_down = pad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN;
+                    let dpad_left = pad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT;
+                    let dpad_right = pad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT;
+                    let a = pad.wButtons & XINPUT_GAMEPAD_A;
+                    let b = pad.wButtons & XINPUT_GAMEPAD_B;
+                    let x = pad.wButtons & XINPUT_GAMEPAD_X;
+                    let y = pad.wButtons & XINPUT_GAMEPAD_Y;
+                    let start = pad.wButtons & XINPUT_GAMEPAD_START;
+                    let back = pad.wButtons & XINPUT_GAMEPAD_BACK;
+                    let left_shoulder = pad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER;
+                    let right_shoulder = pad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER;
+
+                    let stick_x = pad.sThumbLX;
+                    let stick_y = pad.sThumbLY;
+
+                    if stick_x > XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE { x_offset += 1; }
+                    if stick_y > XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE { y_offset += 1; }
+                } else {
+                    //TODO: Check if we care about this controller.
+                }
+            }
+
+            // x += 1;
+            // y += 1;
+            draw_weird_gradient(&mut OFFSCREEN_BUFFER, x_offset*pan_speed,y_offset*pan_speed);
             
             let window_dimensions = win32_get_window_dimensions(window_handle);
             win32_update_window(device_context, &mut OFFSCREEN_BUFFER, window_dimensions.width, window_dimensions.height);
