@@ -3,13 +3,12 @@ extern crate winapi;
 extern crate kernel32;
 extern crate libc;
 extern crate gdi32;
-// extern crate xinput;
 
 use std::ffi::OsStr;
 use std::iter::once;
 use std::os::windows::ffi::OsStrExt;
 use std::mem;
-use std::ptr::null_mut;
+use std::num::Wrapping;
 
 use self::winapi::winuser::*;
 use self::winapi::windef::*;
@@ -17,13 +16,19 @@ use self::winapi::minwindef::*;
 use self::winapi::wingdi::*;
 use self::winapi::winnt::*;
 use self::winapi::xinput::*;
-
 // Dynamic Linking XInput because reasons.  See the initialising code
-type XInputGetStateType = extern "system" fn(dwUserIndex:DWORD, pState: *mut XINPUT_STATE) -> DWORD;
-extern "system" fn XInputGetStateStub(dwUserIndex: DWORD, pState: *mut XINPUT_STATE) -> DWORD {
+type XInputGetStateType = extern "system" fn(user_index:DWORD, state: *mut XINPUT_STATE) -> DWORD;
+extern "system" fn xinput_get_state_stub(_: DWORD, _: *mut XINPUT_STATE) -> DWORD {
     self::winapi::winerror::ERROR_DEVICE_NOT_CONNECTED
 }
-static mut XINPUT_GET_STATE_PTR: XInputGetStateType = XInputGetStateStub;
+static mut XINPUT_GET_STATE_PTR: XInputGetStateType = xinput_get_state_stub;
+
+type XInputSetStateType = extern "system" fn(user_index:DWORD, state: *mut XINPUT_VIBRATION) -> DWORD;
+extern "system" fn xinput_set_state_stub(_: DWORD, _: *mut XINPUT_VIBRATION) -> DWORD {
+    self::winapi::winerror::ERROR_DEVICE_NOT_CONNECTED
+}
+static mut XINPUT_SET_STATE_PTR: XInputSetStateType = xinput_set_state_stub;
+
 
 struct Win32OffscreenBuffer {
     info: BITMAPINFO,
@@ -63,6 +68,40 @@ static mut OFFSCREEN_BUFFER: Win32OffscreenBuffer = Win32OffscreenBuffer {
     memory: 0 as LPVOID
 };
 
+macro_rules! cstr {
+    ($str:expr) => ({
+        use std::ffi::CString;
+        CString::new($str).unwrap().as_ptr()
+    });
+}
+
+macro_rules! wstr {
+    ($str:expr) => ({
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+        let wstr: Vec<u16> = OsStr::new($str)
+                                 .encode_wide()
+                                 .chain(Some(0).into_iter())
+                                 .collect();
+        wstr.as_ptr()
+    });
+}
+
+unsafe fn win32_load_xinput() {
+        //Version available on modern windows without DX SDK Install
+        let mut xinput_module = kernel32::LoadLibraryW(wstr!("xinput1_4.dll"));
+
+        if xinput_module == 0 as HMODULE {
+            //Version available on old windows without DX SDK Install
+            xinput_module = kernel32::LoadLibraryW(wstr!("xinput9_1_0.dll"));
+        }
+        
+        if xinput_module != 0 as HMODULE {
+            XINPUT_GET_STATE_PTR = mem::transmute::<FARPROC, XInputGetStateType>(kernel32::GetProcAddress(xinput_module, cstr!("XInputGetState")));
+            XINPUT_SET_STATE_PTR = mem::transmute::<FARPROC, XInputSetStateType>(kernel32::GetProcAddress(xinput_module, cstr!("XInputSetState")));
+        }
+}
+
 unsafe fn win32_get_window_dimensions (window_handle: HWND) -> WindowDimensions {
     let mut window_rect: RECT = mem::uninitialized();
     user32::GetClientRect(window_handle, &mut window_rect);
@@ -92,37 +131,18 @@ fn to_wide_string(str: &str) -> Vec<u16> {
     OsStr::new(str).encode_wide().chain(once(0)).collect()
 }
 
-macro_rules! cstr {
-    ($str:expr) => ({
-        use std::ffi::CString;
-        CString::new($str).unwrap().as_ptr()
-    });
-}
-
-macro_rules! wstr {
-    ($str:expr) => ({
-        use std::ffi::OsStr;
-        use std::os::windows::ffi::OsStrExt;
-        let wstr: Vec<u16> = OsStr::new($str)
-                                 .encode_wide()
-                                 .chain(Some(0).into_iter())
-                                 .collect();
-        wstr.as_ptr()
-    });
-}
-
-unsafe fn draw_weird_gradient(buffer: &mut Win32OffscreenBuffer, x_offset: u32, y_offset: u32) {
+unsafe fn draw_weird_gradient(buffer: &mut Win32OffscreenBuffer, x_offset: i16, y_offset: i16) {
     
-    let width = buffer.width;
-    let height = buffer.height;
-    let bytes_per_pixel = buffer.bytes_per_pixel;
+    let width = buffer.width as i16;
+    let height = buffer.height as i16;
+    let bytes_per_pixel = buffer.bytes_per_pixel as i16;
     
     let pitch = width*bytes_per_pixel;
     let mut row: *mut u8 = buffer.memory as *mut u8;
     for y in 0..height {
         let mut pixel: *mut u32 = row as *mut u32;
         for x in 0..width {
-            *pixel = ((x as u32 + x_offset) << 0 ) + ((y as u32 + y_offset) << 8);
+            *pixel = ((x.wrapping_add(x_offset) as u8) << 0) as u32 + (((y.wrapping_add(-y_offset) as u8) as u32) << 8);
             pixel = pixel.offset(1);
 
         };
@@ -144,18 +164,7 @@ pub fn main() {
     unsafe {
         OFFSCREEN_BUFFER.info.bmiHeader.biSize = mem::size_of::<BITMAPINFOHEADER>() as u32;
         win32_resize_dib_section(&mut OFFSCREEN_BUFFER, 1280, 720);
-        
-        //Version available on modern windows without DX SDK Install
-        let mut xinput_module = kernel32::LoadLibraryW(wstr!("xinput1_4.dll"));
-
-        if xinput_module == 0 as HMODULE {
-            //Version available on old windows without DX SDK Install
-            xinput_module = kernel32::LoadLibraryW(wstr!("xinput9_1_0.dll"));
-        }
-        
-        if xinput_module != 0 as HMODULE {
-            XINPUT_GET_STATE_PTR = mem::transmute::<FARPROC, XInputGetStateType>(kernel32::GetProcAddress(xinput_module, cstr!("XInputGetState")));
-        }
+        win32_load_xinput();
     }
 
     let window_class_name = to_wide_string("RustHeroWindowClass").as_ptr();
@@ -221,10 +230,8 @@ pub fn main() {
 
             for controller_index in 0..XUSER_MAX_COUNT {
                 let mut controller_state = mem::uninitialized();          
-                // let controller_found = xinput::XInputGetState(controller_index as DWORD, &mut controller_state);
                 let controller_found = XINPUT_GET_STATE_PTR(controller_index as DWORD, &mut controller_state);
                 if controller_found == self::winapi::winerror::ERROR_SUCCESS {
-                    println!("Controller found {}", controller_index);
                     let pad = controller_state.Gamepad;
                     
                     let dpad_up = pad.wButtons & XINPUT_GAMEPAD_DPAD_UP;
@@ -243,16 +250,20 @@ pub fn main() {
                     let stick_x = pad.sThumbLX;
                     let stick_y = pad.sThumbLY;
 
-                    if stick_x > XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE { x_offset += 1; }
-                    if stick_y > XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE { y_offset += 1; }
+                    if stick_x.abs() > XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE { x_offset += stick_x >> 12; }
+                    if stick_y.abs() > XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE { y_offset += stick_y >> 12; }
+
+                    //XINPUT_SET_STATE_PTR(controller_index, &mut XINPUT_VIBRATION { wLeftMotorSpeed: 60000, wRightMotorSpeed: 60000 });
                 } else {
                     //TODO: Check if we care about this controller.
                 }
             }
 
+
+
             // x += 1;
             // y += 1;
-            draw_weird_gradient(&mut OFFSCREEN_BUFFER, x_offset*pan_speed,y_offset*pan_speed);
+            draw_weird_gradient(&mut OFFSCREEN_BUFFER, x_offset, y_offset);
             
             let window_dimensions = win32_get_window_dimensions(window_handle);
             win32_update_window(device_context, &mut OFFSCREEN_BUFFER, window_dimensions.width, window_dimensions.height);
@@ -272,6 +283,39 @@ pub fn main() {
             let window_dimensions = win32_get_window_dimensions(hwnd);
             win32_update_window(hdc, &mut OFFSCREEN_BUFFER, window_dimensions.width, window_dimensions.height);
             user32::EndPaint(hwnd, &paint);
+        },
+        WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_SYSKEYUP => {
+            let vk_code = w_param;
+            let was_down = (l_param & 1 << 30) != 0;
+            let is_down = (l_param & 1 << 31) == 0;
+
+            if vk_code == 'W' as u64 {
+            }
+            if vk_code == 'A' as u64 {
+            }
+            if vk_code == 'S' as u64 {
+            }
+            if vk_code == 'D' as u64 {
+            }
+            if vk_code == 'Q' as u64 {
+            }
+            if vk_code == VK_UP as u64 {
+            }
+            if vk_code == VK_DOWN as u64 {
+            }
+            if vk_code == VK_LEFT as u64 {
+            }
+            if vk_code == VK_RIGHT as u64 {
+            }
+            if vk_code == VK_ESCAPE as u64 {
+                if is_down != was_down {
+                    println!("ESCAPE");
+                }
+            }
+            if vk_code == VK_SPACE as u64 {
+                println!("\n");
+            }
+
         },
         _ => { return user32::DefWindowProcW(hwnd, msg, w_param, l_param); }
     };
