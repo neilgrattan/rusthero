@@ -288,6 +288,7 @@ pub fn main() {
             let vk_code = w_param;
             let was_down = (l_param & 1 << 30) != 0;
             let is_down = (l_param & 1 << 31) == 0;
+            let alt_down = (l_param & 1 << 29) != 0;
 
             if vk_code == 'W' as u64 {
             }
@@ -315,6 +316,9 @@ pub fn main() {
             if vk_code == VK_SPACE as u64 {
                 println!("\n");
             }
+            if vk_code == VK_F4 as u64 && alt_down {
+                GLOBAL_RUNNING = false;
+             }
 
         },
         _ => { return user32::DefWindowProcW(hwnd, msg, w_param, l_param); }
