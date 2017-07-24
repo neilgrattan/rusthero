@@ -9,4 +9,4 @@ user32-sys = "0.2"
 kernel32-sys = "0.2"
 gdi32-sys = "0.2"
 libc = "0.2"
-xinput-sys = { git = "https://github.com/retep998/winapi-rs", path = "lib/xinput", branch="0.2" }
+#xinput-sys = { git = "https://github.com/retep998/winapi-rs", path = "lib/xinput", branch="0.2" }

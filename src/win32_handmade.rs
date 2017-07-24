@@ -3,7 +3,7 @@ extern crate winapi;
 extern crate kernel32;
 extern crate libc;
 extern crate gdi32;
-extern crate xinput;
+// extern crate xinput;
 
 use std::ffi::OsStr;
 use std::iter::once;
@@ -17,6 +17,13 @@ use self::winapi::minwindef::*;
 use self::winapi::wingdi::*;
 use self::winapi::winnt::*;
 use self::winapi::xinput::*;
+
+// Dynamic Linking XInput because reasons.  See the initialising code
+type XInputGetStateType = extern "system" fn(dwUserIndex:DWORD, pState: *mut XINPUT_STATE) -> DWORD;
+extern "system" fn XInputGetStateStub(dwUserIndex: DWORD, pState: *mut XINPUT_STATE) -> DWORD {
+    self::winapi::winerror::ERROR_DEVICE_NOT_CONNECTED
+}
+static mut XINPUT_GET_STATE_PTR: XInputGetStateType = XInputGetStateStub;
 
 struct Win32OffscreenBuffer {
     info: BITMAPINFO,
@@ -85,6 +92,25 @@ fn to_wide_string(str: &str) -> Vec<u16> {
     OsStr::new(str).encode_wide().chain(once(0)).collect()
 }
 
+macro_rules! cstr {
+    ($str:expr) => ({
+        use std::ffi::CString;
+        CString::new($str).unwrap().as_ptr()
+    });
+}
+
+macro_rules! wstr {
+    ($str:expr) => ({
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+        let wstr: Vec<u16> = OsStr::new($str)
+                                 .encode_wide()
+                                 .chain(Some(0).into_iter())
+                                 .collect();
+        wstr.as_ptr()
+    });
+}
+
 unsafe fn draw_weird_gradient(buffer: &mut Win32OffscreenBuffer, x_offset: u32, y_offset: u32) {
     
     let width = buffer.width;
@@ -117,7 +143,19 @@ unsafe fn win32_update_window(device_context: HDC, buffer: &mut Win32OffscreenBu
 pub fn main() {
     unsafe {
         OFFSCREEN_BUFFER.info.bmiHeader.biSize = mem::size_of::<BITMAPINFOHEADER>() as u32;
-        win32_resize_dib_section(&mut OFFSCREEN_BUFFER, 1280, 720)
+        win32_resize_dib_section(&mut OFFSCREEN_BUFFER, 1280, 720);
+        
+        //Version available on modern windows without DX SDK Install
+        let mut xinput_module = kernel32::LoadLibraryW(wstr!("xinput1_4.dll"));
+
+        if xinput_module == 0 as HMODULE {
+            //Version available on old windows without DX SDK Install
+            xinput_module = kernel32::LoadLibraryW(wstr!("xinput9_1_0.dll"));
+        }
+        
+        if xinput_module != 0 as HMODULE {
+            XINPUT_GET_STATE_PTR = mem::transmute::<FARPROC, XInputGetStateType>(kernel32::GetProcAddress(xinput_module, cstr!("XInputGetState")));
+        }
     }
 
     let window_class_name = to_wide_string("RustHeroWindowClass").as_ptr();
@@ -183,8 +221,10 @@ pub fn main() {
 
             for controller_index in 0..XUSER_MAX_COUNT {
                 let mut controller_state = mem::uninitialized();          
-                let controller_found = xinput::XInputGetState(controller_index as DWORD, &mut controller_state);
+                // let controller_found = xinput::XInputGetState(controller_index as DWORD, &mut controller_state);
+                let controller_found = XINPUT_GET_STATE_PTR(controller_index as DWORD, &mut controller_state);
                 if controller_found == self::winapi::winerror::ERROR_SUCCESS {
+                    println!("Controller found {}", controller_index);
                     let pad = controller_state.Gamepad;
                     
                     let dpad_up = pad.wButtons & XINPUT_GAMEPAD_DPAD_UP;
