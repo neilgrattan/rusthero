@@ -8,7 +8,7 @@ use std::ffi::OsStr;
 use std::iter::once;
 use std::os::windows::ffi::OsStrExt;
 use std::mem;
-use std::num::Wrapping;
+use std::ptr::null_mut;
 
 use self::winapi::winuser::*;
 use self::winapi::windef::*;
@@ -16,6 +16,13 @@ use self::winapi::minwindef::*;
 use self::winapi::wingdi::*;
 use self::winapi::winnt::*;
 use self::winapi::xinput::*;
+use self::winapi::dsound::*;
+use self::winapi::unknwnbase::LPUNKNOWN;
+use self::winapi::guiddef::LPCGUID;
+use self::winapi::winerror::{HRESULT, SUCCEEDED};
+use self::winapi::mmreg::{WAVEFORMATEX,WAVE_FORMAT_PCM};
+use self::winapi::guiddef::GUID;
+
 // Dynamic Linking XInput because reasons.  See the initialising code
 type XInputGetStateType = extern "system" fn(user_index:DWORD, state: *mut XINPUT_STATE) -> DWORD;
 extern "system" fn xinput_get_state_stub(_: DWORD, _: *mut XINPUT_STATE) -> DWORD {
@@ -29,6 +36,7 @@ extern "system" fn xinput_set_state_stub(_: DWORD, _: *mut XINPUT_VIBRATION) -> 
 }
 static mut XINPUT_SET_STATE_PTR: XInputSetStateType = xinput_set_state_stub;
 
+type DirectSoundCreate = extern "system" fn(pcGuidDevice: LPCGUID, ppds: *mut LPDIRECTSOUND, pUnkOuter: LPUNKNOWN) -> HRESULT;
 
 struct Win32OffscreenBuffer {
     info: BITMAPINFO,
@@ -88,18 +96,73 @@ macro_rules! wstr {
 }
 
 unsafe fn win32_load_xinput() {
-        //Version available on modern windows without DX SDK Install
-        let mut xinput_module = kernel32::LoadLibraryW(wstr!("xinput1_4.dll"));
+    //Version available on modern windows without DX SDK Install
+    let mut xinput_module = kernel32::LoadLibraryW(wstr!("xinput1_4.dll"));
 
-        if xinput_module == 0 as HMODULE {
-            //Version available on old windows without DX SDK Install
-            xinput_module = kernel32::LoadLibraryW(wstr!("xinput9_1_0.dll"));
+    if xinput_module == 0 as HMODULE {
+        //Version available on old windows without DX SDK Install
+        xinput_module = kernel32::LoadLibraryW(wstr!("xinput9_1_0.dll"));
+    }
+    
+    if xinput_module != 0 as HMODULE {
+        XINPUT_GET_STATE_PTR = mem::transmute::<FARPROC, XInputGetStateType>(kernel32::GetProcAddress(xinput_module, cstr!("XInputGetState")));
+        XINPUT_SET_STATE_PTR = mem::transmute::<FARPROC, XInputSetStateType>(kernel32::GetProcAddress(xinput_module, cstr!("XInputSetState")));
+    }
+}
+
+unsafe fn win32_load_direct_sound(window_handle: HWND, samples_per_second: u32, buffer_bytes: u32) {
+    let dsound_module = kernel32::LoadLibraryW(wstr!("dsound.dll"));
+
+    if dsound_module != 0 as HMODULE {
+        let direct_sound_create_ptr: DirectSoundCreate = mem::transmute::<FARPROC, DirectSoundCreate>(kernel32::GetProcAddress(dsound_module, cstr!("DirectSoundCreate")));
+        let mut direct_sound: LPDIRECTSOUND = mem::uninitialized();
+        if SUCCEEDED(direct_sound_create_ptr(0 as LPCGUID, &mut direct_sound, 0 as LPUNKNOWN)) {
+            if SUCCEEDED((*direct_sound).SetCooperativeLevel(window_handle, DSSCL_PRIORITY)) != true {
+                println!("Failed to set cooperative level.");
+            }
+
+            let buffer_description = DSBUFFERDESC {
+                dwSize: mem::size_of::<DSBUFFERDESC>() as u32,
+                dwFlags: DSBCAPS_PRIMARYBUFFER,
+                dwBufferBytes: 0,
+                dwReserved: 0,
+                lpwfxFormat: null_mut(),
+                guid3DAlgorithm: GUID {Data1: 0, Data2: 0, Data3: 0, Data4: [0;8] }
+            };
+
+            let mut primary_buffer: LPDIRECTSOUNDBUFFER = mem::uninitialized();
+            if !SUCCEEDED((*direct_sound).CreateSoundBuffer(&buffer_description, &mut primary_buffer, 0 as LPUNKNOWN)) {
+                println!("Failed to create primary buffer");
+            }
+
+            let mut wave_format: WAVEFORMATEX = mem::zeroed();
+            wave_format.wFormatTag      = WAVE_FORMAT_PCM;
+            wave_format.nChannels       = 2;
+            wave_format.nSamplesPerSec  = samples_per_second;
+            wave_format.wBitsPerSample  = 16;
+            wave_format.nBlockAlign     = (wave_format.nChannels * wave_format.wBitsPerSample) / 8;
+            wave_format.nAvgBytesPerSec = wave_format.nSamplesPerSec * wave_format.nBlockAlign as DWORD;
+            wave_format.cbSize          = 0;
+
+            if !SUCCEEDED((*primary_buffer).SetFormat(&wave_format)) {
+                println!("Failed to set format of primary buffer");
+            }
+
+            let buffer_description = DSBUFFERDESC {
+                dwSize: mem::size_of::<DSBUFFERDESC>() as u32,
+                dwFlags: DSBCAPS_GETCURRENTPOSITION2,
+                dwBufferBytes: buffer_bytes,
+                dwReserved: 0,
+                lpwfxFormat: &mut wave_format,
+                guid3DAlgorithm: GUID {Data1: 0, Data2: 0, Data3: 0, Data4: [0;8] }
+            };
+
+            let mut secondary_buffer = mem::uninitialized();
+            if !SUCCEEDED((*direct_sound).CreateSoundBuffer(&buffer_description, &mut secondary_buffer, null_mut())) {
+                println!("Failed to create secondary buffer");
+            }
         }
-        
-        if xinput_module != 0 as HMODULE {
-            XINPUT_GET_STATE_PTR = mem::transmute::<FARPROC, XInputGetStateType>(kernel32::GetProcAddress(xinput_module, cstr!("XInputGetState")));
-            XINPUT_SET_STATE_PTR = mem::transmute::<FARPROC, XInputSetStateType>(kernel32::GetProcAddress(xinput_module, cstr!("XInputSetState")));
-        }
+    }
 }
 
 unsafe fn win32_get_window_dimensions (window_handle: HWND) -> WindowDimensions {
@@ -123,8 +186,7 @@ unsafe fn win32_resize_dib_section(buffer: &mut Win32OffscreenBuffer, width: i32
         kernel32::VirtualFree(buffer.memory, 0 as u64, MEM_RELEASE);
     }
     
-    buffer.memory = kernel32::VirtualAlloc(0 as LPVOID, bitmap_memory_size as u64, MEM_COMMIT, PAGE_READWRITE);
-
+    buffer.memory = kernel32::VirtualAlloc(0 as LPVOID, bitmap_memory_size as u64, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
 }
 
 fn to_wide_string(str: &str) -> Vec<u16> {
@@ -215,11 +277,12 @@ pub fn main() {
             return;
         }
 
+        win32_load_direct_sound(window_handle, 48000, 48000 * 2 *2);  //casey set buffer size to 48000*sizeof(int16)*2???
         let device_context = user32::GetDC(window_handle);
 
         let mut x_offset = 0;
         let mut y_offset = 0;
-        let pan_speed = 10;
+        //let pan_speed = 10;
 
         while GLOBAL_RUNNING {
             let mut msg: MSG = mem::uninitialized();
@@ -234,18 +297,18 @@ pub fn main() {
                 if controller_found == self::winapi::winerror::ERROR_SUCCESS {
                     let pad = controller_state.Gamepad;
                     
-                    let dpad_up = pad.wButtons & XINPUT_GAMEPAD_DPAD_UP;
-                    let dpad_down = pad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN;
-                    let dpad_left = pad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT;
-                    let dpad_right = pad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT;
-                    let a = pad.wButtons & XINPUT_GAMEPAD_A;
-                    let b = pad.wButtons & XINPUT_GAMEPAD_B;
-                    let x = pad.wButtons & XINPUT_GAMEPAD_X;
-                    let y = pad.wButtons & XINPUT_GAMEPAD_Y;
-                    let start = pad.wButtons & XINPUT_GAMEPAD_START;
-                    let back = pad.wButtons & XINPUT_GAMEPAD_BACK;
-                    let left_shoulder = pad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER;
-                    let right_shoulder = pad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER;
+                    // let dpad_up = pad.wButtons & XINPUT_GAMEPAD_DPAD_UP;
+                    // let dpad_down = pad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN;
+                    // let dpad_left = pad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT;
+                    // let dpad_right = pad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT;
+                    // let a = pad.wButtons & XINPUT_GAMEPAD_A;
+                    // let b = pad.wButtons & XINPUT_GAMEPAD_B;
+                    // let x = pad.wButtons & XINPUT_GAMEPAD_X;
+                    // let y = pad.wButtons & XINPUT_GAMEPAD_Y;
+                    // let start = pad.wButtons & XINPUT_GAMEPAD_START;
+                    // let back = pad.wButtons & XINPUT_GAMEPAD_BACK;
+                    // let left_shoulder = pad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER;
+                    // let right_shoulder = pad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER;
 
                     let stick_x = pad.sThumbLX;
                     let stick_y = pad.sThumbLY;
