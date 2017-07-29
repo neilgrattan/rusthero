@@ -78,19 +78,6 @@ static mut OFFSCREEN_BUFFER: Win32OffscreenBuffer = Win32OffscreenBuffer {
     memory: 0 as LPVOID
 };
 
-struct Win32SoundOutput {
-    playing_audio: bool,
-    wave_sample_index: u32,
-    sound_wave_hz: u32,
-    sound_wave_period_in_samples: u32,
-    sound_wave_volume: i16
-}
-
-static mut SECONDARY_SOUND_BUFFER: LPDIRECTSOUNDBUFFER = 0 as LPDIRECTSOUNDBUFFER;
-static mut SOUND_BUFFER_BYTES: u32 = 0;
-static mut SOUND_BUFFER_BYTES_PER_SAMPLE: u16 = 4;
-static SOUND_BUFFER_SAMPLE_FREQUENCY: u32 = 48000;
-
 macro_rules! cstr {
     ($str:expr) => ({
         use std::ffi::CString;
@@ -125,7 +112,28 @@ unsafe fn win32_load_xinput() {
     }
 }
 
-unsafe fn win32_load_direct_sound(window_handle: HWND, samples_per_second: u32, buffer_bytes: u32) {
+struct Win32SoundOutput {
+    playing_audio: bool,
+    wave_sample_index: u32,
+    sine_angle: f32,
+    sound_wave_hz: u32,
+    sound_wave_volume: i32,
+    sound_buffer: LPDIRECTSOUNDBUFFER,
+    sound_buffer_bytes_per_sample: u32,
+    sound_buffer_sample_frequency: u32
+}
+
+impl Win32SoundOutput {
+    fn sound_wave_period_in_samples(&self) -> u32 {
+        self.sound_buffer_sample_frequency / self.sound_wave_hz
+    }
+
+    fn buffer_bytes_count(&self) -> u32 {
+        self.sound_buffer_sample_frequency * self.sound_buffer_bytes_per_sample
+    }
+}
+
+unsafe fn win32_load_direct_sound(window_handle: HWND, sound_output: &mut Win32SoundOutput) {
     let dsound_module = kernel32::LoadLibraryW(wstr!("dsound.dll"));
 
     if dsound_module != 0 as HMODULE {
@@ -153,12 +161,11 @@ unsafe fn win32_load_direct_sound(window_handle: HWND, samples_per_second: u32, 
             let mut wave_format: WAVEFORMATEX = mem::zeroed();
             wave_format.wFormatTag      = WAVE_FORMAT_PCM;
             wave_format.nChannels       = 2;
-            wave_format.nSamplesPerSec  = samples_per_second;
+            wave_format.nSamplesPerSec  = sound_output.sound_buffer_sample_frequency;
             wave_format.wBitsPerSample  = 16;
             wave_format.nBlockAlign     = (wave_format.nChannels * wave_format.wBitsPerSample) / 8;
             wave_format.nAvgBytesPerSec = wave_format.nSamplesPerSec * wave_format.nBlockAlign as DWORD;
             wave_format.cbSize          = 0;
-            SOUND_BUFFER_BYTES_PER_SAMPLE = wave_format.nBlockAlign; 
 
             if !SUCCEEDED((*primary_buffer).SetFormat(&wave_format)) {
                 println!("Failed to set format of primary buffer");
@@ -167,19 +174,20 @@ unsafe fn win32_load_direct_sound(window_handle: HWND, samples_per_second: u32, 
             let buffer_description = DSBUFFERDESC {
                 dwSize: mem::size_of::<DSBUFFERDESC>() as u32,
                 dwFlags: DSBCAPS_GETCURRENTPOSITION2,
-                dwBufferBytes: buffer_bytes,
+                dwBufferBytes: sound_output.buffer_bytes_count(),
                 dwReserved: 0,
                 lpwfxFormat: &mut wave_format,
                 guid3DAlgorithm: GUID {Data1: 0, Data2: 0, Data3: 0, Data4: [0;8] }
             };
 
-            SECONDARY_SOUND_BUFFER = mem::uninitialized();
-            if !SUCCEEDED((*direct_sound).CreateSoundBuffer(&buffer_description, &mut SECONDARY_SOUND_BUFFER, null_mut())) {
+            if !SUCCEEDED((*direct_sound).CreateSoundBuffer(&buffer_description, &mut sound_output.sound_buffer, null_mut())) {
+                println!("Failed to create sound buffer!");
             }
-            SOUND_BUFFER_BYTES = buffer_bytes;
         }
     }
 }
+
+
 
 unsafe fn win32_get_window_dimensions (window_handle: HWND) -> WindowDimensions {
     let mut window_rect: RECT = mem::uninitialized();
@@ -244,13 +252,15 @@ unsafe fn win32_fill_sound_buffer(sound_output: &mut Win32SoundOutput, byte_to_l
     let mut section_2_pointer = null_mut();
     let mut section_2_size = 0;
 
-    if SUCCEEDED((*SECONDARY_SOUND_BUFFER).Lock(byte_to_lock, num_bytes_to_write, &mut section_1_pointer, &mut section_1_size, &mut section_2_pointer, &mut section_2_size, 0)) {
+    if SUCCEEDED((*sound_output.sound_buffer).Lock(byte_to_lock, num_bytes_to_write, &mut section_1_pointer, &mut section_1_size, &mut section_2_pointer, &mut section_2_size, 0)) {
 
         let mut write_sample: *mut i16 = section_1_pointer as *mut i16;
-        for write_index in 0..section_1_size/(SOUND_BUFFER_BYTES_PER_SAMPLE as u32) {
-            let sample_index_in_wave = sound_output.wave_sample_index % sound_output.sound_wave_period_in_samples; // sample index of wave
-            let sine_angle = ((sample_index_in_wave as f32/ sound_output.sound_wave_period_in_samples as f32)) * (2.0*f32::consts::PI);
-            let sine_value = sine_angle.sin();
+        for write_index in 0..section_1_size/(sound_output.sound_buffer_bytes_per_sample as u32) {
+
+
+            // let sample_index_in_wave = sound_output.wave_sample_index % sound_output.sound_wave_period_in_samples(); // sample index of wave
+            // let sine_angle = ((sample_index_in_wave as f32 / sound_output.sound_wave_period_in_samples() as f32)) * (2.0*f32::consts::PI);
+            let sine_value = sound_output.sine_angle.sin();
             let sample_val = (sine_value * sound_output.sound_wave_volume as f32) as i16;
 
             //Channel 1
@@ -262,13 +272,16 @@ unsafe fn win32_fill_sound_buffer(sound_output: &mut Win32SoundOutput, byte_to_l
             write_sample = write_sample.offset(1);
 
             sound_output.wave_sample_index = sound_output.wave_sample_index.wrapping_add(1);
+            sound_output.sine_angle = sound_output.sine_angle + (2.0*f32::consts::PI) / sound_output.sound_wave_period_in_samples() as f32
         }
 
         let mut write_sample: *mut i16 = section_2_pointer as *mut i16;
-        for write_index in 0..section_2_size/(SOUND_BUFFER_BYTES_PER_SAMPLE as u32) {
-            let sample_index_in_wave = sound_output.wave_sample_index % sound_output.sound_wave_period_in_samples; // sample index of wave
-            let sine_angle = ((sample_index_in_wave as f32/ sound_output.sound_wave_period_in_samples as f32)) * (2.0*f32::consts::PI);
-            let sine_value = sine_angle.sin();
+        for write_index in 0..section_2_size/(sound_output.sound_buffer_bytes_per_sample as u32) {
+
+
+            // let sample_index_in_wave = sound_output.wave_sample_index % sound_output.sound_wave_period_in_samples(); // sample index of wave
+            // let sine_angle = ((sample_index_in_wave as f32/ sound_output.sound_wave_period_in_samples() as f32)) * (2.0*f32::consts::PI);
+            let sine_value = sound_output.sine_angle.sin();
             let sample_val = (sine_value * sound_output.sound_wave_volume as f32) as i16;
 
             //Channel 1
@@ -280,9 +293,10 @@ unsafe fn win32_fill_sound_buffer(sound_output: &mut Win32SoundOutput, byte_to_l
             write_sample = write_sample.offset(1);
 
             sound_output.wave_sample_index = sound_output.wave_sample_index.wrapping_add(1);
+            sound_output.sine_angle = sound_output.sine_angle + (2.0*f32::consts::PI) / sound_output.sound_wave_period_in_samples() as f32
         }
         
-        if !SUCCEEDED((*SECONDARY_SOUND_BUFFER).Unlock(section_1_pointer, section_1_size, section_2_pointer, section_2_size)) {
+        if !SUCCEEDED((*sound_output.sound_buffer).Unlock(section_1_pointer, section_1_size, section_2_pointer, section_2_size)) {
             println!("Failed to unlock");
         }
     }
@@ -348,16 +362,21 @@ pub fn main() {
         let mut y_offset = 0;
         //let pan_speed = 10;
 
-        win32_load_direct_sound(window_handle, SOUND_BUFFER_SAMPLE_FREQUENCY, SOUND_BUFFER_SAMPLE_FREQUENCY * SOUND_BUFFER_BYTES_PER_SAMPLE as u32);
-        
-        let mut sound_output = Win32SoundOutput {
+let mut sound_output = Win32SoundOutput {
             playing_audio: false,
             wave_sample_index: 0, //wave position in samples
+            sine_angle: 0.0,
             sound_wave_hz: 256,
-            sound_wave_period_in_samples: SOUND_BUFFER_SAMPLE_FREQUENCY / 256, //192 samples per period
-            sound_wave_volume: 1000
-        };        
+            sound_wave_volume: 1000,
+            sound_buffer: 0 as LPDIRECTSOUNDBUFFER,
+            sound_buffer_bytes_per_sample: 4,
+            sound_buffer_sample_frequency: 48000
+        };
 
+        win32_load_direct_sound(window_handle, &mut sound_output);
+        let buffer_count = sound_output.buffer_bytes_count();
+        win32_fill_sound_buffer(&mut sound_output, 0, buffer_count);
+        
         while GLOBAL_RUNNING {
             let mut msg: MSG = mem::uninitialized();
             while user32::PeekMessageW(&mut msg, window_handle,0,0,PM_REMOVE) != 0 {
@@ -387,7 +406,7 @@ pub fn main() {
                     let stick_x = pad.sThumbLX;
                     let stick_y = pad.sThumbLY;
 
-                    if stick_x.abs() > XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE { x_offset += stick_x >> 12; }
+                    if stick_x.abs() > XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE { x_offset += stick_x >> 12;  sound_output.sound_wave_hz = (sound_output.sound_wave_hz as i32 + ((stick_x >> 12)as i32 / 2)) as u32 ; }
                     if stick_y.abs() > XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE { y_offset += stick_y >> 12; }
 
                     //XINPUT_SET_STATE_PTR(controller_index, &mut XINPUT_VIBRATION { wLeftMotorSpeed: 60000, wRightMotorSpeed: 60000 });
@@ -405,17 +424,10 @@ pub fn main() {
             let mut play_cursor = 0;
             let mut write_cursor = 0;
 
-            if SUCCEEDED((*SECONDARY_SOUND_BUFFER).GetCurrentPosition(&mut play_cursor, &mut write_cursor)) {
-                let byte_to_lock = (sound_output.wave_sample_index.wrapping_mul(SOUND_BUFFER_BYTES_PER_SAMPLE as u32)) % SOUND_BUFFER_BYTES;
-                let num_bytes_to_write = if byte_to_lock == play_cursor {
-                    if !sound_output.playing_audio {
-                    SOUND_BUFFER_BYTES
-                    } else {
-                        0
-                    }
-                }
-                else if byte_to_lock > play_cursor {
-                    (SOUND_BUFFER_BYTES - byte_to_lock) + play_cursor
+            if SUCCEEDED((*sound_output.sound_buffer).GetCurrentPosition(&mut play_cursor, &mut write_cursor)) {
+                let byte_to_lock = (sound_output.wave_sample_index.wrapping_mul(sound_output.sound_buffer_bytes_per_sample as u32)) % sound_output.buffer_bytes_count();
+                let num_bytes_to_write = if byte_to_lock > play_cursor {
+                    (sound_output.buffer_bytes_count() - byte_to_lock) + play_cursor
                 } 
                 else {
                     play_cursor - byte_to_lock
@@ -424,7 +436,7 @@ pub fn main() {
                 win32_fill_sound_buffer(&mut sound_output, byte_to_lock, num_bytes_to_write);
 
                 if !sound_output.playing_audio {
-                    (*SECONDARY_SOUND_BUFFER).Play(0, 0, DSBPLAY_LOOPING);
+                    (*sound_output.sound_buffer).Play(0, 0, DSBPLAY_LOOPING);
                     sound_output.playing_audio = true;
                 }
             }
