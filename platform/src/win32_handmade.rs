@@ -462,7 +462,7 @@ pub fn main() {
             let split3_elapsed = 1000*(split3 - split2) / (perf_counter_frequency);  //Devide by frequency to get how many cycles per second
             let total_elapsed = 1000.0 *(end_counter - last_counter) as f32 / (perf_counter_frequency as f32);  //Devide by frequency to get how many cycles per second
             let fps = 1000.0 / total_elapsed;
-            println!("Split1 {}, Split2 {}, Split3 {}, Total {}ms, FPS {}", split1_elapsed, split2_elapsed, split3_elapsed, total_elapsed, fps);
+            println!("Split1 {}, Split2 {}, Split3 {}, Total {:.2}ms, FPS {:.2}", split1_elapsed, split2_elapsed, split3_elapsed, total_elapsed, fps);
             last_counter = end_counter;
         }
     }
