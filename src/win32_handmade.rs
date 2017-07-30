@@ -120,7 +120,8 @@ struct Win32SoundOutput {
     sound_wave_volume: i32,
     sound_buffer: LPDIRECTSOUNDBUFFER,
     sound_buffer_bytes_per_sample: u32,
-    sound_buffer_sample_frequency: u32
+    sound_buffer_sample_frequency: u32,
+    latency_sample_count: u32
 }
 
 impl Win32SoundOutput {
@@ -256,10 +257,6 @@ unsafe fn win32_fill_sound_buffer(sound_output: &mut Win32SoundOutput, byte_to_l
 
         let mut write_sample: *mut i16 = section_1_pointer as *mut i16;
         for write_index in 0..section_1_size/(sound_output.sound_buffer_bytes_per_sample as u32) {
-
-
-            // let sample_index_in_wave = sound_output.wave_sample_index % sound_output.sound_wave_period_in_samples(); // sample index of wave
-            // let sine_angle = ((sample_index_in_wave as f32 / sound_output.sound_wave_period_in_samples() as f32)) * (2.0*f32::consts::PI);
             let sine_value = sound_output.sine_angle.sin();
             let sample_val = (sine_value * sound_output.sound_wave_volume as f32) as i16;
 
@@ -277,10 +274,6 @@ unsafe fn win32_fill_sound_buffer(sound_output: &mut Win32SoundOutput, byte_to_l
 
         let mut write_sample: *mut i16 = section_2_pointer as *mut i16;
         for write_index in 0..section_2_size/(sound_output.sound_buffer_bytes_per_sample as u32) {
-
-
-            // let sample_index_in_wave = sound_output.wave_sample_index % sound_output.sound_wave_period_in_samples(); // sample index of wave
-            // let sine_angle = ((sample_index_in_wave as f32/ sound_output.sound_wave_period_in_samples() as f32)) * (2.0*f32::consts::PI);
             let sine_value = sound_output.sine_angle.sin();
             let sample_val = (sine_value * sound_output.sound_wave_volume as f32) as i16;
 
@@ -362,7 +355,7 @@ pub fn main() {
         let mut y_offset = 0;
         //let pan_speed = 10;
 
-let mut sound_output = Win32SoundOutput {
+        let mut sound_output = Win32SoundOutput {
             playing_audio: false,
             wave_sample_index: 0, //wave position in samples
             sine_angle: 0.0,
@@ -370,14 +363,18 @@ let mut sound_output = Win32SoundOutput {
             sound_wave_volume: 1000,
             sound_buffer: 0 as LPDIRECTSOUNDBUFFER,
             sound_buffer_bytes_per_sample: 4,
-            sound_buffer_sample_frequency: 48000
+            sound_buffer_sample_frequency: 48000,
+            latency_sample_count: 48000 / 10 // Number of samples to stay head of the play cursor
         };
 
         win32_load_direct_sound(window_handle, &mut sound_output);
-        let buffer_count = sound_output.buffer_bytes_count();
-        win32_fill_sound_buffer(&mut sound_output, 0, buffer_count);
+        let buffer_fill_bytes = sound_output.latency_sample_count * sound_output.sound_buffer_bytes_per_sample;
+        win32_fill_sound_buffer(&mut sound_output, 0, buffer_fill_bytes);
         
         while GLOBAL_RUNNING {
+
+
+
             let mut msg: MSG = mem::uninitialized();
             while user32::PeekMessageW(&mut msg, window_handle,0,0,PM_REMOVE) != 0 {
                 user32::TranslateMessage(&mut msg);
@@ -426,11 +423,13 @@ let mut sound_output = Win32SoundOutput {
 
             if SUCCEEDED((*sound_output.sound_buffer).GetCurrentPosition(&mut play_cursor, &mut write_cursor)) {
                 let byte_to_lock = (sound_output.wave_sample_index.wrapping_mul(sound_output.sound_buffer_bytes_per_sample as u32)) % sound_output.buffer_bytes_count();
-                let num_bytes_to_write = if byte_to_lock > play_cursor {
-                    (sound_output.buffer_bytes_count() - byte_to_lock) + play_cursor
+                let target_cursor = (play_cursor + (sound_output.latency_sample_count*sound_output.sound_buffer_bytes_per_sample)) % sound_output.buffer_bytes_count();
+
+                let num_bytes_to_write = if byte_to_lock > target_cursor {
+                    (sound_output.buffer_bytes_count() - byte_to_lock) + target_cursor
                 } 
                 else {
-                    play_cursor - byte_to_lock
+                    target_cursor - byte_to_lock
                 };
 
                 win32_fill_sound_buffer(&mut sound_output, byte_to_lock, num_bytes_to_write);
