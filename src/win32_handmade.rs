@@ -231,7 +231,6 @@ unsafe fn draw_weird_gradient(buffer: &mut Win32OffscreenBuffer, x_offset: i16, 
         for x in 0..width {
             *pixel = ((x.wrapping_add(x_offset) as u8) << 0) as u32 + (((y.wrapping_add(-y_offset) as u8) as u32) << 8);
             pixel = pixel.offset(1);
-
         };
         row = row.offset(pitch as isize);
     };
@@ -364,22 +363,28 @@ pub fn main() {
             sound_buffer: 0 as LPDIRECTSOUNDBUFFER,
             sound_buffer_bytes_per_sample: 4,
             sound_buffer_sample_frequency: 48000,
-            latency_sample_count: 48000 / 10 // Number of samples to stay head of the play cursor
+            latency_sample_count: 48000 / 15  // Number of samples to stay head of the play cursor
         };
 
         win32_load_direct_sound(window_handle, &mut sound_output);
         let buffer_fill_bytes = sound_output.latency_sample_count * sound_output.sound_buffer_bytes_per_sample;
         win32_fill_sound_buffer(&mut sound_output, 0, buffer_fill_bytes);
+
+        let mut perf_counter_frequency = 0;
+        kernel32::QueryPerformanceFrequency(&mut perf_counter_frequency);
         
+        let mut last_counter = 0;
+        kernel32::QueryPerformanceCounter(&mut last_counter);
+
         while GLOBAL_RUNNING {
-
-
-
             let mut msg: MSG = mem::uninitialized();
             while user32::PeekMessageW(&mut msg, window_handle,0,0,PM_REMOVE) != 0 {
                 user32::TranslateMessage(&mut msg);
                 user32::DispatchMessageW(&mut msg);
             }
+
+            let mut split1 = 0;
+            kernel32::QueryPerformanceCounter(&mut split1);
 
             for controller_index in 0..XUSER_MAX_COUNT {
                 let mut controller_state = mem::uninitialized();          
@@ -412,10 +417,19 @@ pub fn main() {
                 }
             }
 
+            let mut split2 = 0;
+            kernel32::QueryPerformanceCounter(&mut split2);
+
             // Test graphics
-            draw_weird_gradient(&mut OFFSCREEN_BUFFER, x_offset, y_offset);            
+            draw_weird_gradient(&mut OFFSCREEN_BUFFER, x_offset, y_offset);
+
+            let mut split3 = 0;
+            kernel32::QueryPerformanceCounter(&mut split3);
+            
             let window_dimensions = win32_get_window_dimensions(window_handle);
             win32_update_window(device_context, &mut OFFSCREEN_BUFFER, window_dimensions.width, window_dimensions.height);
+
+            
 
             // Test sound
             let mut play_cursor = 0;
@@ -439,6 +453,17 @@ pub fn main() {
                     sound_output.playing_audio = true;
                 }
             }
+
+            let mut end_counter = 0;
+            kernel32::QueryPerformanceCounter(&mut end_counter);
+
+            let split1_elapsed = 1000*(split1 - last_counter) / (perf_counter_frequency);  //Devide by frequency to get how many cycles per second
+            let split2_elapsed = 1000*(split2 - split1) / (perf_counter_frequency);  //Devide by frequency to get how many cycles per second
+            let split3_elapsed = 1000*(split3 - split2) / (perf_counter_frequency);  //Devide by frequency to get how many cycles per second
+            let total_elapsed = 1000.0 *(end_counter - last_counter) as f32 / (perf_counter_frequency as f32);  //Devide by frequency to get how many cycles per second
+            let fps = 1000.0 / total_elapsed;
+            println!("Split1 {}, Split2 {}, Split3 {}, Total {}ms, FPS {}", split1_elapsed, split2_elapsed, split3_elapsed, total_elapsed, fps);
+            last_counter = end_counter;
         }
     }
 }
