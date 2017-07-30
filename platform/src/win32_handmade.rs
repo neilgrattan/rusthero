@@ -3,6 +3,8 @@ extern crate winapi;
 extern crate kernel32;
 extern crate libc;
 extern crate gdi32;
+extern crate libloading;
+extern crate handmade;
 
 use std::ffi::OsStr;
 use std::iter::once;
@@ -11,6 +13,7 @@ use std::mem;
 use std::ptr::null_mut;
 use std::f32;
 use std::u32;
+use std::fs::metadata;
 
 use self::winapi::winuser::*;
 use self::winapi::windef::*;
@@ -24,6 +27,25 @@ use self::winapi::guiddef::LPCGUID;
 use self::winapi::winerror::{HRESULT, SUCCEEDED};
 use self::winapi::mmreg::{WAVEFORMATEX,WAVE_FORMAT_PCM};
 use self::winapi::guiddef::GUID;
+use self::libloading::Library;
+
+
+extern fn callback(a: i32) {
+    println!("I'm called from the lib with value {0}", a);
+}
+
+//Dynamic linking of handmade lib
+struct HandmadeLib(Library);
+impl HandmadeLib {
+    fn game_update_and_render(&self) -> () {
+        unsafe {
+            let f = self.0.get::<fn(extern fn(i32) -> ()) -> ()>(
+                b"game_update_and_render"//b"game_update_and_render\0"
+            ).unwrap();
+            f(callback)
+        }
+    }
+}
 
 // Dynamic Linking XInput because reasons.  See the initialising code
 type XInputGetStateType = extern "system" fn(user_index:DWORD, state: *mut XINPUT_STATE) -> DWORD;
@@ -376,12 +398,27 @@ pub fn main() {
         let mut last_counter = 0;
         kernel32::QueryPerformanceCounter(&mut last_counter);
 
+        let mut handmade_lib = HandmadeLib(Library::new("handmade").unwrap_or_else(|error| panic!("{}", error)));
+        let mut last_modified = metadata("handmade.dll").unwrap().modified().unwrap();
+
         while GLOBAL_RUNNING {
             let mut msg: MSG = mem::uninitialized();
             while user32::PeekMessageW(&mut msg, window_handle,0,0,PM_REMOVE) != 0 {
                 user32::TranslateMessage(&mut msg);
                 user32::DispatchMessageW(&mut msg);
             }
+
+            // Test DLL 
+            // if let Ok(Ok(modified)) = metadata("handmade").map(|m| m.modified()) {
+            //     if modified > last_modified {
+            //         drop(handmade_lib);
+            //         handmade_lib = HandmadeLib(Library::new("handmade")
+            //             .unwrap_or_else(|error| panic!("{}", error)));
+            //         last_modified = modified;
+            //         println!("Lib modified")
+            //     }
+            // }
+            handmade_lib.game_update_and_render();
 
             let mut split1 = 0;
             kernel32::QueryPerformanceCounter(&mut split1);
@@ -462,7 +499,7 @@ pub fn main() {
             let split3_elapsed = 1000*(split3 - split2) / (perf_counter_frequency);  //Devide by frequency to get how many cycles per second
             let total_elapsed = 1000.0 *(end_counter - last_counter) as f32 / (perf_counter_frequency as f32);  //Devide by frequency to get how many cycles per second
             let fps = 1000.0 / total_elapsed;
-            println!("Split1 {}, Split2 {}, Split3 {}, Total {:.2}ms, FPS {:.2}", split1_elapsed, split2_elapsed, split3_elapsed, total_elapsed, fps);
+            // println!("Split1 {}, Split2 {}, Split3 {}, Total {:.2}ms, FPS {:.2}", split1_elapsed, split2_elapsed, split3_elapsed, total_elapsed, fps);
             last_counter = end_counter;
         }
     }

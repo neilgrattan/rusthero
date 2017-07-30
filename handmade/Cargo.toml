@@ -4,6 +4,6 @@ version = "0.0.1"
 authors = ["Neil Grattan"]
 
 [lib]
-crate-type = ["dylib"]
+crate-type = ["rlib", "cdylib"]
 
 [dependencies]

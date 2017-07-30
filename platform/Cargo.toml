@@ -9,3 +9,5 @@ user32-sys = "0.2"
 kernel32-sys = "0.2"
 gdi32-sys = "0.2"
 libc = "0.2"
+"libloading" = "0.4"
+handmade = { path = "../handmade"}
