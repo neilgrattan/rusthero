@@ -29,20 +29,21 @@ use self::winapi::mmreg::{WAVEFORMATEX,WAVE_FORMAT_PCM};
 use self::winapi::guiddef::GUID;
 use self::libloading::Library;
 
+use self::handmade::{GameUpdateAndRender, GameOffscreenBuffer};
 
-extern fn callback(a: i32) {
-    println!("I'm called from the lib with value {0}", a);
+extern fn callback() {
+    println!("I'm called from the lib without value ");
 }
 
 //Dynamic linking of handmade lib
 struct HandmadeLib(Library);
 impl HandmadeLib {
-    fn game_update_and_render(&self) -> () {
+    fn game_update_and_render(&self, buffer: &mut GameOffscreenBuffer, x: i16, y: i16) -> () {
         unsafe {
-            let f = self.0.get::<fn(extern fn(i32) -> ()) -> ()>(
+            let f = self.0.get::<GameUpdateAndRender>(
                 b"game_update_and_render"//b"game_update_and_render\0"
             ).unwrap();
-            f(callback)
+            f(buffer, x, y)
         }
     }
 }
@@ -240,23 +241,7 @@ fn to_wide_string(str: &str) -> Vec<u16> {
     OsStr::new(str).encode_wide().chain(once(0)).collect()
 }
 
-unsafe fn draw_weird_gradient(buffer: &mut Win32OffscreenBuffer, x_offset: i16, y_offset: i16) {
-    
-    let width = buffer.width as i16;
-    let height = buffer.height as i16;
-    let bytes_per_pixel = buffer.bytes_per_pixel as i16;
-    
-    let pitch = width*bytes_per_pixel;
-    let mut row: *mut u8 = buffer.memory as *mut u8;
-    for y in 0..height {
-        let mut pixel: *mut u32 = row as *mut u32;
-        for x in 0..width {
-            *pixel = ((x.wrapping_add(x_offset) as u8) << 0) as u32 + (((y.wrapping_add(-y_offset) as u8) as u32) << 8);
-            pixel = pixel.offset(1);
-        };
-        row = row.offset(pitch as isize);
-    };
-}
+
 
 unsafe fn win32_update_window(device_context: HDC, buffer: &mut Win32OffscreenBuffer, window_width: i32, window_height: i32) {
     gdi32::StretchDIBits(device_context, 
@@ -418,7 +403,6 @@ pub fn main() {
             //         println!("Lib modified")
             //     }
             // }
-            handmade_lib.game_update_and_render();
 
             let mut split1 = 0;
             kernel32::QueryPerformanceCounter(&mut split1);
@@ -458,7 +442,14 @@ pub fn main() {
             kernel32::QueryPerformanceCounter(&mut split2);
 
             // Test graphics
-            draw_weird_gradient(&mut OFFSCREEN_BUFFER, x_offset, y_offset);
+            
+            handmade_lib.game_update_and_render(&mut handmade::GameOffscreenBuffer {
+                bytes_per_pixel: OFFSCREEN_BUFFER.bytes_per_pixel,
+                width: OFFSCREEN_BUFFER.width,
+                height: OFFSCREEN_BUFFER.height,
+                memory: OFFSCREEN_BUFFER.memory
+            }, x_offset, y_offset); 
+            //draw_weird_gradient(&mut OFFSCREEN_BUFFER, x_offset, y_offset);
 
             let mut split3 = 0;
             kernel32::QueryPerformanceCounter(&mut split3);
