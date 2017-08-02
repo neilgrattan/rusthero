@@ -11,9 +11,8 @@ use std::iter::once;
 use std::os::windows::ffi::OsStrExt;
 use std::mem;
 use std::ptr::null_mut;
-use std::f32;
 use std::u32;
-use std::fs::metadata;
+// use std::fs::metadata;
 
 use self::winapi::winuser::*;
 use self::winapi::windef::*;
@@ -29,21 +28,17 @@ use self::winapi::mmreg::{WAVEFORMATEX,WAVE_FORMAT_PCM};
 use self::winapi::guiddef::GUID;
 use self::libloading::Library;
 
-use self::handmade::{GameUpdateAndRender, GameOffscreenBuffer};
-
-extern fn callback() {
-    println!("I'm called from the lib without value ");
-}
+use self::handmade::{GameUpdateAndRender, GameOffscreenBuffer, GameSoundBuffer};
 
 //Dynamic linking of handmade lib
 struct HandmadeLib(Library);
 impl HandmadeLib {
-    fn game_update_and_render(&self, buffer: &mut GameOffscreenBuffer, x: i16, y: i16) -> () {
+    fn game_update_and_render(&self, buffer: &mut GameOffscreenBuffer, x: i16, y: i16, sound: &GameSoundBuffer) -> () {
         unsafe {
             let f = self.0.get::<GameUpdateAndRender>(
-                b"game_update_and_render"//b"game_update_and_render\0"
+                b"game_update_and_render"
             ).unwrap();
-            f(buffer, x, y)
+            f(buffer, x, y, sound)
         }
     }
 }
@@ -137,10 +132,7 @@ unsafe fn win32_load_xinput() {
 
 struct Win32SoundOutput {
     playing_audio: bool,
-    wave_sample_index: u32,
-    sine_angle: f32,
-    sound_wave_hz: u32,
-    sound_wave_volume: i32,
+    current_sample_index: u32,
     sound_buffer: LPDIRECTSOUNDBUFFER,
     sound_buffer_bytes_per_sample: u32,
     sound_buffer_sample_frequency: u32,
@@ -148,10 +140,6 @@ struct Win32SoundOutput {
 }
 
 impl Win32SoundOutput {
-    fn sound_wave_period_in_samples(&self) -> u32 {
-        self.sound_buffer_sample_frequency / self.sound_wave_hz
-    }
-
     fn buffer_bytes_count(&self) -> u32 {
         self.sound_buffer_sample_frequency * self.sound_buffer_bytes_per_sample
     }
@@ -211,8 +199,6 @@ unsafe fn win32_load_direct_sound(window_handle: HWND, sound_output: &mut Win32S
     }
 }
 
-
-
 unsafe fn win32_get_window_dimensions (window_handle: HWND) -> WindowDimensions {
     let mut window_rect: RECT = mem::uninitialized();
     user32::GetClientRect(window_handle, &mut window_rect);
@@ -241,8 +227,6 @@ fn to_wide_string(str: &str) -> Vec<u16> {
     OsStr::new(str).encode_wide().chain(once(0)).collect()
 }
 
-
-
 unsafe fn win32_update_window(device_context: HDC, buffer: &mut Win32OffscreenBuffer, window_width: i32, window_height: i32) {
     gdi32::StretchDIBits(device_context, 
         0, 0, window_width, window_height,
@@ -253,51 +237,48 @@ unsafe fn win32_update_window(device_context: HDC, buffer: &mut Win32OffscreenBu
         SRCCOPY);
 }
 
-unsafe fn win32_fill_sound_buffer(sound_output: &mut Win32SoundOutput, byte_to_lock: DWORD, num_bytes_to_write: DWORD) {
+unsafe fn win32_fill_sound_buffer(sound_output: &mut Win32SoundOutput, sound_buffer: &GameSoundBuffer) {
     let mut section_1_pointer = null_mut();
     let mut section_1_size = 0;
     let mut section_2_pointer = null_mut();
     let mut section_2_size = 0;
 
-    if SUCCEEDED((*sound_output.sound_buffer).Lock(byte_to_lock, num_bytes_to_write, &mut section_1_pointer, &mut section_1_size, &mut section_2_pointer, &mut section_2_size, 0)) {
-
+    if SUCCEEDED((*sound_output.sound_buffer).Lock(sound_output.current_sample_index*sound_output.sound_buffer_bytes_per_sample, 
+    sound_buffer.sample_count*sound_output.sound_buffer_bytes_per_sample, 
+    &mut section_1_pointer, &mut section_1_size, &mut section_2_pointer, &mut section_2_size, 0)) {
         let mut write_sample: *mut i16 = section_1_pointer as *mut i16;
-        for write_index in 0..section_1_size/(sound_output.sound_buffer_bytes_per_sample as u32) {
-            let sine_value = sound_output.sine_angle.sin();
-            let sample_val = (sine_value * sound_output.sound_wave_volume as f32) as i16;
-
+        let mut read_sample: *mut i16 = sound_buffer.memory as *mut i16;
+        for _ in 0..section_1_size/(sound_output.sound_buffer_bytes_per_sample as u32) {
             //Channel 1
-            *write_sample = sample_val;
+            *write_sample = *read_sample;
             write_sample = write_sample.offset(1);
+            read_sample = read_sample.offset(1);
 
             //Channel 2
-            *write_sample = sample_val;
+            *write_sample = *read_sample;
             write_sample = write_sample.offset(1);
-
-            sound_output.wave_sample_index = sound_output.wave_sample_index.wrapping_add(1);
-            sound_output.sine_angle = sound_output.sine_angle + (2.0*f32::consts::PI) / sound_output.sound_wave_period_in_samples() as f32
+            read_sample = read_sample.offset(1);
         }
 
         let mut write_sample: *mut i16 = section_2_pointer as *mut i16;
-        for write_index in 0..section_2_size/(sound_output.sound_buffer_bytes_per_sample as u32) {
-            let sine_value = sound_output.sine_angle.sin();
-            let sample_val = (sine_value * sound_output.sound_wave_volume as f32) as i16;
-
+        for _ in 0..section_2_size/(sound_output.sound_buffer_bytes_per_sample as u32) {
             //Channel 1
-            *write_sample = sample_val;
+            *write_sample = *read_sample;
             write_sample = write_sample.offset(1);
+            read_sample = read_sample.offset(1);
 
             //Channel 2
-            *write_sample = sample_val;
+            *write_sample = *read_sample;
             write_sample = write_sample.offset(1);
-
-            sound_output.wave_sample_index = sound_output.wave_sample_index.wrapping_add(1);
-            sound_output.sine_angle = sound_output.sine_angle + (2.0*f32::consts::PI) / sound_output.sound_wave_period_in_samples() as f32
+            read_sample = read_sample.offset(1);
         }
         
         if !SUCCEEDED((*sound_output.sound_buffer).Unlock(section_1_pointer, section_1_size, section_2_pointer, section_2_size)) {
             println!("Failed to unlock");
         }
+
+        sound_output.current_sample_index = (sound_output.current_sample_index + sound_buffer.sample_count) % 
+                                            (sound_output.buffer_bytes_count() / sound_output.sound_buffer_bytes_per_sample)
     }
 }
 
@@ -326,7 +307,7 @@ pub fn main() {
         lpszClassName: window_class_name
     };
 
-    let ret = unsafe { //TODO: Can we use Options to get rid of all these unsafes?
+    let ret = unsafe {
         user32::RegisterClassW(&mut window)
     };
 
@@ -359,14 +340,10 @@ pub fn main() {
         let device_context = user32::GetDC(window_handle);
         let mut x_offset = 0;
         let mut y_offset = 0;
-        //let pan_speed = 10;
 
         let mut sound_output = Win32SoundOutput {
             playing_audio: false,
-            wave_sample_index: 0, //wave position in samples
-            sine_angle: 0.0,
-            sound_wave_hz: 256,
-            sound_wave_volume: 1000,
+            current_sample_index: 0, //wave position in samples
             sound_buffer: 0 as LPDIRECTSOUNDBUFFER,
             sound_buffer_bytes_per_sample: 4,
             sound_buffer_sample_frequency: 48000,
@@ -374,8 +351,11 @@ pub fn main() {
         };
 
         win32_load_direct_sound(window_handle, &mut sound_output);
-        let buffer_fill_bytes = sound_output.latency_sample_count * sound_output.sound_buffer_bytes_per_sample;
-        win32_fill_sound_buffer(&mut sound_output, 0, buffer_fill_bytes);
+        let mut game_sound_buffer = GameSoundBuffer {
+            memory: kernel32::VirtualAlloc(0 as LPVOID, (sound_output.sound_buffer_bytes_per_sample * sound_output.sound_buffer_sample_frequency) as u64, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE),
+            sample_count: 0, //Initialised to 0, but will specify this each frame to reach our target latency
+            sample_frequency: sound_output.sound_buffer_sample_frequency
+        };
 
         let mut perf_counter_frequency = 0;
         kernel32::QueryPerformanceFrequency(&mut perf_counter_frequency);
@@ -384,7 +364,7 @@ pub fn main() {
         kernel32::QueryPerformanceCounter(&mut last_counter);
 
         let mut handmade_lib = HandmadeLib(Library::new("handmade").unwrap_or_else(|error| panic!("{}", error)));
-        let mut last_modified = metadata("handmade.dll").unwrap().modified().unwrap();
+        //let mut last_modified = metadata("handmade.dll").unwrap_or_else(|error| panic!("fujck{}", error)).modified().unwrap();
 
         while GLOBAL_RUNNING {
             let mut msg: MSG = mem::uninitialized();
@@ -403,9 +383,6 @@ pub fn main() {
             //         println!("Lib modified")
             //     }
             // }
-
-            let mut split1 = 0;
-            kernel32::QueryPerformanceCounter(&mut split1);
 
             for controller_index in 0..XUSER_MAX_COUNT {
                 let mut controller_state = mem::uninitialized();          
@@ -429,8 +406,8 @@ pub fn main() {
                     let stick_x = pad.sThumbLX;
                     let stick_y = pad.sThumbLY;
 
-                    if stick_x.abs() > XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE { x_offset += stick_x >> 12;  sound_output.sound_wave_hz = (sound_output.sound_wave_hz as i32 + ((stick_x >> 12)as i32 / 2)) as u32 ; }
-                    if stick_y.abs() > XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE { y_offset += stick_y >> 12; }
+                    if stick_x.abs() > XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE { x_offset += stick_x >> 12;}
+                    if stick_y.abs() > XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE { y_offset += stick_y >> 12;}
 
                     //XINPUT_SET_STATE_PTR(controller_index, &mut XINPUT_VIBRATION { wLeftMotorSpeed: 60000, wRightMotorSpeed: 60000 });
                 } else {
@@ -438,59 +415,57 @@ pub fn main() {
                 }
             }
 
-            let mut split2 = 0;
-            kernel32::QueryPerformanceCounter(&mut split2);
+            let mut play_cursor = 0;
+            let mut write_cursor = 0;
+            if SUCCEEDED((*sound_output.sound_buffer).GetCurrentPosition(&mut play_cursor, &mut write_cursor)) {
+                
+                let target_cursor = (play_cursor + (sound_output.latency_sample_count*sound_output.sound_buffer_bytes_per_sample)) % sound_output.buffer_bytes_count();
+                let byte_to_lock = if !sound_output.playing_audio {
+                    sound_output.current_sample_index = write_cursor / sound_output.sound_buffer_bytes_per_sample;
+                    write_cursor
+                }
+                else {
+                    sound_output.current_sample_index * sound_output.sound_buffer_bytes_per_sample
+                };
 
-            // Test graphics
+                game_sound_buffer.sample_count = if byte_to_lock > target_cursor {
+                    ((sound_output.buffer_bytes_count() - byte_to_lock) + target_cursor) / sound_output.sound_buffer_bytes_per_sample
+                } 
+                else {
+                    (target_cursor - byte_to_lock) / sound_output.sound_buffer_bytes_per_sample
+                };
+
+                // println!("P:{},  W:{},  L:{}, T:{}, dt:{}", 
+                //         play_cursor*sound_output.sound_buffer_bytes_per_sample, 
+                //         write_cursor*sound_output.sound_buffer_bytes_per_sample, 
+                //         byte_to_lock*sound_output.sound_buffer_bytes_per_sample,
+                //         target_cursor*sound_output.sound_buffer_bytes_per_sample,
+                //         game_sound_buffer.sample_count)
+            }
+
             
             handmade_lib.game_update_and_render(&mut handmade::GameOffscreenBuffer {
                 bytes_per_pixel: OFFSCREEN_BUFFER.bytes_per_pixel,
                 width: OFFSCREEN_BUFFER.width,
                 height: OFFSCREEN_BUFFER.height,
                 memory: OFFSCREEN_BUFFER.memory
-            }, x_offset, y_offset); 
-            //draw_weird_gradient(&mut OFFSCREEN_BUFFER, x_offset, y_offset);
-
-            let mut split3 = 0;
-            kernel32::QueryPerformanceCounter(&mut split3);
+            }, x_offset, y_offset, &game_sound_buffer); 
             
+            // Test graphics
             let window_dimensions = win32_get_window_dimensions(window_handle);
             win32_update_window(device_context, &mut OFFSCREEN_BUFFER, window_dimensions.width, window_dimensions.height);
 
-            
-
             // Test sound
-            let mut play_cursor = 0;
-            let mut write_cursor = 0;
-
-            if SUCCEEDED((*sound_output.sound_buffer).GetCurrentPosition(&mut play_cursor, &mut write_cursor)) {
-                let byte_to_lock = (sound_output.wave_sample_index.wrapping_mul(sound_output.sound_buffer_bytes_per_sample as u32)) % sound_output.buffer_bytes_count();
-                let target_cursor = (play_cursor + (sound_output.latency_sample_count*sound_output.sound_buffer_bytes_per_sample)) % sound_output.buffer_bytes_count();
-
-                let num_bytes_to_write = if byte_to_lock > target_cursor {
-                    (sound_output.buffer_bytes_count() - byte_to_lock) + target_cursor
-                } 
-                else {
-                    target_cursor - byte_to_lock
-                };
-
-                win32_fill_sound_buffer(&mut sound_output, byte_to_lock, num_bytes_to_write);
-
-                if !sound_output.playing_audio {
-                    (*sound_output.sound_buffer).Play(0, 0, DSBPLAY_LOOPING);
-                    sound_output.playing_audio = true;
-                }
+            win32_fill_sound_buffer(&mut sound_output, &game_sound_buffer);
+            if !sound_output.playing_audio {
+                (*sound_output.sound_buffer).Play(0, 0, DSBPLAY_LOOPING);
+                sound_output.playing_audio = true;
             }
 
             let mut end_counter = 0;
             kernel32::QueryPerformanceCounter(&mut end_counter);
-
-            let split1_elapsed = 1000*(split1 - last_counter) / (perf_counter_frequency);  //Devide by frequency to get how many cycles per second
-            let split2_elapsed = 1000*(split2 - split1) / (perf_counter_frequency);  //Devide by frequency to get how many cycles per second
-            let split3_elapsed = 1000*(split3 - split2) / (perf_counter_frequency);  //Devide by frequency to get how many cycles per second
-            let total_elapsed = 1000.0 *(end_counter - last_counter) as f32 / (perf_counter_frequency as f32);  //Devide by frequency to get how many cycles per second
-            let fps = 1000.0 / total_elapsed;
-            // println!("Split1 {}, Split2 {}, Split3 {}, Total {:.2}ms, FPS {:.2}", split1_elapsed, split2_elapsed, split3_elapsed, total_elapsed, fps);
+            let total_elapsed = 1000.0 *(end_counter - last_counter) as f32 / (perf_counter_frequency as f32);  //Divide by frequency to get how many cycles per second
+            // let fps = 1000.0 / total_elapsed;
             last_counter = end_counter;
         }
     }
